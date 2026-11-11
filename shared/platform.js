@@ -14,6 +14,10 @@
 const params = new URLSearchParams(location.search);
 const requested = String(window.PLATFORM || params.get('platform') || 'none').toLowerCase();
 
+// Portals that decide ad frequency themselves: the game offers every natural break
+// and must not run its own ad timers.
+const MANAGED = requested === 'poki' || requested === 'crazygames';
+
 let audio = { mute() {}, unmute() {} };
 
 function loadScript(src) {
@@ -83,12 +87,22 @@ const adapters = {
     // No ad could be shown, so grant the reward rather than punish the player.
     async rewarded() { return true; },
   },
+  // A portal build whose SDK could not load (ad blocker): no ads and, by portal rules, no rewards.
+  blocked: {
+    async init() {},
+    gameplayStart() {},
+    gameplayStop() {},
+    async interstitial() {},
+    async rewarded() { return false; },
+  },
   poki: {
     async init() {
       await loadScript('https://game-cdn.poki.com/scripts/v2/poki-sdk.js');
       await window.PokiSDK.init();
       window.PokiSDK.gameLoadingFinished?.();
     },
+    measure(category, what, action) { window.PokiSDK.measure?.(category, what, action); },
+    language() { return window.PokiSDK.getLanguage?.(); },
     gameplayStart() { window.PokiSDK.gameplayStart(); },
     gameplayStop() { window.PokiSDK.gameplayStop(); },
     async interstitial() {
@@ -115,6 +129,21 @@ const adapters = {
 
 let impl = adapters[requested] || adapters.none;
 let playing = false;
+let inAd = false;
+
+async function ad(fn, fallback) {
+  if (inAd) return fallback;
+  inAd = true;
+  try {
+    return await fn();
+  } catch (err) {
+    console.warn('[platform]', err);
+    return fallback;
+  } finally {
+    inAd = false;
+    audio.unmute();
+  }
+}
 
 async function safe(fn, fallback) {
   try {
@@ -127,6 +156,10 @@ async function safe(fn, fallback) {
 
 export const Platform = {
   get name() { return Object.keys(adapters).find((k) => adapters[k] === impl); },
+  /** True when the portal paces ads itself (Poki, CrazyGames). */
+  get managedAds() { return MANAGED; },
+  /** True when a hint really costs an ad view. */
+  get hasAds() { return impl !== adapters.off && impl !== adapters.blocked; },
 
   /** handlers: { mute(), unmute() } - called around ads so the game goes quiet. */
   async init(handlers = {}) {
@@ -135,27 +168,40 @@ export const Platform = {
       await impl.init();
     } catch (err) {
       console.warn('[platform] SDK failed to start, running without ads', err);
-      impl = adapters.off;
+      impl = MANAGED ? adapters.blocked : adapters.off;
     }
   },
 
+  // Portals reject repeated events and events fired during an ad, so both are filtered here.
   gameplayStart() {
-    if (playing) return;
+    if (playing || inAd) return;
     playing = true;
     safe(() => impl.gameplayStart());
   },
 
   gameplayStop() {
-    if (!playing) return;
+    if (!playing || inAd) return;
     playing = false;
     safe(() => impl.gameplayStop());
   },
 
-  /** Ad between levels. Always resolves. */
-  interstitial() { return safe(() => impl.interstitial()); },
+  /** The player's language: the portal's choice where it has one, else the browser's. */
+  get language() {
+    try {
+      return impl.language?.() || navigator.language || 'en';
+    } catch {
+      return 'en';
+    }
+  },
+
+  /** Progress analytics where the portal offers them, e.g. measure('level', '3', 'start'). */
+  measure(category, what, action) { safe(() => impl.measure?.(category, String(what), action)); },
+
+  /** Ad opportunity before the player returns to the game. Always resolves. */
+  interstitial() { return ad(() => impl.interstitial()); },
 
   /** Ad for a reward. Resolves true when the reward should be granted. */
-  rewarded() { return safe(() => impl.rewarded(), false); },
+  rewarded() { return ad(() => impl.rewarded(), false); },
 };
 
 /** localStorage that never throws (private mode, blocked storage, sandboxed iframes). */

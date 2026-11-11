@@ -3,12 +3,12 @@
 
 import { Platform, store } from './shared/platform.js';
 import { Leaderboard } from './shared/leaderboard.js';
+import { LANGS, applyDom, getLang, setLang, t } from './i18n.js';
 
 const GAME_ID = 'driplink';
 const SAVE_KEY = 'driplink.v2';
 const AD_EVERY_LEVELS = 2; // interstitial after this many wins...
 const AD_MIN_GAP_MS = 30_000; // ...but never more often than this
-const HINT_PENALTY = 0.25; // share of a board's points each hint costs
 
 // ---------- puzzle model ----------
 
@@ -191,8 +191,7 @@ function starsFor(moves, par) {
 
 function pointsFor(g, stars) {
   const base = g.w * g.h * 10;
-  const cut = Math.min(0.75, g.hints * HINT_PENALTY);
-  return { base, stars, cut, total: Math.round(base * stars * (1 - cut)) };
+  return { base, stars, total: base * stars };
 }
 
 const fmt = (n) => n.toLocaleString('en-US');
@@ -212,6 +211,7 @@ const save = store.load(SAVE_KEY, {
   playerId: '',
   tutorialSeen: false,
   muted: false,
+  lang: '', // empty = follow the portal or the browser
 });
 if (!save.playerId) save.playerId = newPlayerId();
 const persist = () => store.save(SAVE_KEY, save);
@@ -257,12 +257,55 @@ function countUp(el, to, render, delay = 0, dur = 700) {
 
 const isLandscape = () => window.innerWidth > window.innerHeight;
 
+const freshRun = (anonymous) => ({ level: 1, score: 0, seed: newSeed(), landscape: isLandscape(), anonymous });
+
 function newRun({ anonymous = false } = {}) {
-  save.run = { level: 1, score: 0, seed: newSeed(), landscape: isLandscape(), anonymous };
-  persist();
-  startLevel();
-  if (!save.tutorialSeen) openHowTo();
+  return resumeWith(() => {
+    save.run = freshRun(anonymous);
+    persist();
+    startLevel();
+  });
 }
+
+/** On load the player lands straight on a board: the saved run, or a new one. */
+function bootRun() {
+  if (!save.run) {
+    save.run = freshRun(true);
+    persist();
+  }
+  startLevel();
+}
+
+let measuredSeed = null; // board already reported to the portal's analytics
+let inBreak = false; // an ad opportunity is running: ignore input
+
+/** Offer the platform an ad. Portals pace ads themselves; elsewhere we use our own limits. */
+async function adBreak() {
+  if (Platform.managedAds) return Platform.interstitial();
+  if (levelsSinceAd >= AD_EVERY_LEVELS && Date.now() - lastAdAt >= AD_MIN_GAP_MS) {
+    await Platform.interstitial();
+    lastAdAt = Date.now();
+    levelsSinceAd = 0;
+  }
+}
+
+/**
+ * Every player-initiated return to the board goes through here (next level, restart,
+ * leaving the menu): gameplay stops, the platform may show an ad, then play resumes.
+ */
+async function resumeWith(action) {
+  if (inBreak) return;
+  inBreak = true;
+  Platform.gameplayStop();
+  hideOverlays();
+  await adBreak();
+  inBreak = false;
+  action();
+  if (boardActive()) Platform.gameplayStart();
+}
+
+/** The player can tap pipes right now: unsolved board with nothing on top of it. */
+const boardActive = () => !!game && !game.solved && OVERLAYS.every((id) => $(id).classList.contains('hidden'));
 
 function openHowTo() {
   show('howto');
@@ -270,10 +313,34 @@ function openHowTo() {
 
 function closeHowTo() {
   hide('howto');
-  if (!save.tutorialSeen) {
-    save.tutorialSeen = true;
-    persist();
+  if (boardActive()) Platform.gameplayStart();
+}
+
+/**
+ * First-time tutorial, shown on the board itself during level 1: a hand points at a pipe
+ * that needs turning, with one short line of text. It ends when level 1 is solved.
+ */
+function updateCoach() {
+  if (!game) return;
+  if (save.tutorialSeen || game.level !== 1 || game.solved) {
+    game.coach = -1;
+    hide('coach');
+    return;
   }
+  // Keep pointing at the same pipe until it is right, then move to the nearest wrong one.
+  if (!(game.coach >= 0 && game.tiles[game.coach] !== game.sol[game.coach])) {
+    const sx = game.src % game.w, sy = (game.src / game.w) | 0;
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < game.tiles.length; i++) {
+      if (game.tiles[i] === game.sol[i]) continue;
+      // The tap itself comes last: "turn a pipe" reads better on an ordinary pipe.
+      const d = i === game.src ? 99 : Math.abs((i % game.w) - sx) + Math.abs(((i / game.w) | 0) - sy);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    game.coach = best;
+  }
+  $('coach').textContent = t(game.moves === 0 ? 'coachTap' : 'coachGoal');
+  show('coach');
 }
 
 function startLevel() {
@@ -306,9 +373,14 @@ function startLevel() {
   if (!REDUCED) for (let i = 0; i < n; i++) game.wetDelay[i] += far * introStep + INTRO_TIME * 0.5;
   hideOverlays();
   updateHud();
+  updateCoach();
   bump($('lvl'));
+  // One start per board, however many times it is restarted.
+  if (measuredSeed !== run.seed) {
+    measuredSeed = run.seed;
+    Platform.measure('level', run.level, 'start');
+  }
   layout();
-  Platform.gameplayStart();
 }
 
 /**
@@ -342,19 +414,20 @@ function syncWater(prev) {
 
 function updateHud() {
   if (!game || !save.run) return;
-  $('lvl').textContent = `Level ${game.level}`;
-  $('score').textContent = `${fmt(save.run.score)} pts`;
+  $('lvl').textContent = t('level', { n: game.level });
+  $('score').textContent = t('pts', { n: fmt(save.run.score) });
   const stars = starsFor(game.moves, game.par);
   const lim = starLimits(game.par);
   const cap = stars === 3 ? lim.three : stars === 2 ? lim.two : 0;
-  const taps = cap ? `${game.moves} / ${cap} taps` : `${game.moves} taps`;
+  const taps = cap ? t('tapsOf', { n: game.moves, cap }) : t('taps', { n: game.moves });
   $('meter').innerHTML = `${starsHtml(stars)} · ${taps}`;
   if (game.lastStars && stars < game.lastStars) bump($('meter'), 'shake');
   game.lastStars = stars;
 }
 
 function rotate(i, dir) {
-  if (!game || game.solved || game.locked[i]) return;
+  if (!game || game.solved || game.locked[i] || inBreak) return;
+  Platform.gameplayStart(); // no-op unless this is the first input after loading
   game.tiles[i] = dir > 0 ? rotCW(game.tiles[i]) : rotCCW(game.tiles[i]);
   // Draw from the previous orientation and spin towards the new one.
   game.anim[i] += dir > 0 ? -Math.PI / 2 : Math.PI / 2;
@@ -371,6 +444,7 @@ function afterChange() {
   const flowTime = syncWater(prev);
   updateHud();
   dirty = true;
+  updateCoach();
   if (isSolved(game, game.filled)) return win(flowTime);
   checkHousesDone();
 }
@@ -409,16 +483,12 @@ function checkHousesDone() {
   }
   if (game.nudged) return;
   game.nudged = true;
-  toast(
-    dry
-      ? `All houses have water! But ${dry} ${dry === 1 ? 'pipe is' : 'pipes are'} still dry. Every pipe must carry water.`
-      : `All houses have water! Now close the ${leaks === 1 ? 'open pipe end' : 'open pipe ends'}.`,
-    4500,
-  );
+  toast(t(dry ? 'toastDry' : 'toastOpen'), 4500);
 }
 
 function win(flowTime = 0) {
   game.solved = true;
+  Platform.measure('level', game.level, 'complete');
   // Let the last water arrive, then send a wave across the board, then show the result.
   const far = Math.max(1, ...game.dist);
   game.waveStep = Math.min(0.05, 0.5 / far);
@@ -440,18 +510,22 @@ function win(flowTime = 0) {
   persist();
   levelsSinceAd++;
   setTimeout(sfx.win, REDUCED ? 0 : waveAt);
-  $('score').textContent = `${fmt(run.score)} pts`;
+  $('score').textContent = t('pts', { n: fmt(run.score) });
   bump($('score'));
+  if (!save.tutorialSeen) {
+    save.tutorialSeen = true;
+    persist();
+  }
+  updateCoach();
 
-  $('win-title').textContent = `Level ${game.level} complete`;
+  $('win-title').textContent = t('levelDone', { n: game.level });
   $('win-stars').innerHTML = [0, 1, 2]
     .map((k) => `<span class="star ${k < stars ? 'on' : 'off'}" style="--i:${k}">★</span>`)
     .join('');
   const rows = [
-    [`Board ${game.w}×${game.h}`, `${fmt(pts.base)} pts`],
-    [`${'★'.repeat(stars)} ${stars === 1 ? 'star' : 'stars'}`, `×${stars}`],
+    [t('board', { w: game.w, h: game.h }), t('pts', { n: fmt(pts.base) })],
+    [`${t('stars')} ${'★'.repeat(stars)}`, `×${stars}`],
   ];
-  if (pts.cut) rows.push([`${game.hints} ${game.hints === 1 ? 'hint' : 'hints'}`, `−${Math.round(pts.cut * 100)}%`]);
   const box = $('win-breakdown');
   box.replaceChildren(
     ...rows.map(([label, value]) => {
@@ -466,11 +540,8 @@ function win(flowTime = 0) {
   );
   $('win-points').textContent = `+${fmt(pts.total)}`;
   const solvedGame = game;
-  $('win-total').textContent = `Total: ${fmt(run.score)} pts`;
-  $('win-tip').textContent =
-    stars === 3
-      ? 'Perfect: fewest possible taps!'
-      : `★★★ needed ${game.par} taps or fewer. You used ${game.moves}.`;
+  $('win-total').textContent = t('total', { n: fmt(run.score) });
+  $('win-tip').textContent = stars === 3 ? t('perfect') : t('tip', { par: game.par, moves: game.moves });
   $('win-rank').textContent = '';
   submitScore(run.score, game.level);
   setTimeout(() => {
@@ -531,27 +602,24 @@ function renderLeaderRows(list, rows) {
   );
 }
 
-async function nextLevel() {
-  hide('win');
-  if (levelsSinceAd >= AD_EVERY_LEVELS && Date.now() - lastAdAt >= AD_MIN_GAP_MS) {
-    await Platform.interstitial();
-    lastAdAt = Date.now();
-    levelsSinceAd = 0;
-  }
-  startLevel();
+function nextLevel() {
+  return resumeWith(startLevel);
 }
 
 async function hint() {
-  if (!game || game.solved) return;
+  if (!game || game.solved || inBreak) return;
   const wrong = [];
   for (let i = 0; i < game.tiles.length; i++) {
     if (!game.locked[i] && game.tiles[i] !== game.sol[i]) wrong.push(i);
   }
-  if (!wrong.length) return toast('Every pipe is already in place');
+  if (!wrong.length) return toast(t('toastAllSet'));
+  inBreak = true;
   Platform.gameplayStop();
   const granted = await Platform.rewarded();
+  inBreak = false;
   Platform.gameplayStart();
-  if (!granted) return toast('No hint this time');
+  // On portals a refused ad stays silent: the portal explains ad blockers itself.
+  if (!granted) return Platform.managedAds ? undefined : toast(t('toastNoHint'));
   const i = wrong[(Math.random() * wrong.length) | 0];
   game.tiles[i] = game.sol[i];
   game.locked[i] = 1;
@@ -559,7 +627,7 @@ async function hint() {
   game.anim[i] = Math.PI * 2;
   ring(i, COLORS.gold, 0.85, 0.6);
   splash(i, 8, [COLORS.gold, '#ffffff'], 0.8);
-  toast(`Hint used: this board pays ${Math.round(Math.min(0.75, game.hints * HINT_PENALTY) * 100)}% less`);
+  toast(t('toastHint'));
   afterChange();
 }
 
@@ -571,38 +639,37 @@ function hide(id) { $(id).classList.add('hidden'); }
 function hideOverlays() { OVERLAYS.forEach(hide); }
 
 function openMenu() {
-  if (game && !game.solved) Platform.gameplayStop();
+  if (inBreak) return;
+  Platform.gameplayStop();
   const run = save.run;
   const cont = $('btn-continue');
   cont.classList.toggle('hidden', !run);
-  if (run) cont.textContent = `Continue · Level ${run.level} · ${fmt(run.score)} pts`;
+  if (run) cont.textContent = t('continue', { level: run.level, score: fmt(run.score) });
   $('btn-new').className = run ? 'secondary wide' : 'primary wide';
   $('btn-name').textContent = save.name ? `Player: ${save.name} ✎` : 'Set your name for the leaderboard';
   $('btn-name').classList.toggle('hidden', !Leaderboard.enabled);
   $('btn-leaders').classList.toggle('hidden', !Leaderboard.enabled);
-  $('best').textContent = save.best ? `Your best: ${fmt(save.best)} pts · reached level ${save.bestLevel}` : '';
-  $('btn-sound').textContent = `Sound: ${progressSound()}`;
+  $('best').textContent = save.best ? t('best', { score: fmt(save.best), level: save.bestLevel }) : '';
+  $('btn-sound').textContent = soundLabel();
+  $('btn-lang').textContent = `🌐 ${t('language', { name: LANGS[getLang()] })}`;
   hideOverlays();
   show('menu');
 }
 
-const progressSound = () => (save.muted ? 'off' : 'on');
+const soundLabel = () => t(save.muted ? 'soundOff' : 'soundOn');
 
 function continueRun() {
   // Same board still on screen: just resume it, keeping the taps made so far.
-  if (game && !game.solved && game.seed === save.run.seed) {
-    hideOverlays();
-    Platform.gameplayStart();
-    return;
-  }
-  startLevel();
+  return resumeWith(() => {
+    if (!(game && !game.solved && game.seed === save.run.seed)) startLevel();
+  });
 }
 
 function askNewGame() {
   const run = save.run;
   if (!run || (run.level === 1 && run.score === 0)) return askNameThenStart();
   $('confirm-text').textContent =
-    `Your current run (level ${run.level}, ${fmt(run.score)} pts) will be lost.` +
+    t('startOverText', { level: run.level, score: fmt(run.score) }) +
     (Leaderboard.enabled ? ' Your best score stays on the leaderboard.' : '');
   show('confirm');
 }
@@ -754,10 +821,12 @@ function layout() {
   canvas.height = Math.round(r.height * view.dpr);
   if (game) {
     const margin = 12;
+    // The tutorial caption sits under the board, so the board leaves room for it.
+    const height = r.height - ($('coach').classList.contains('hidden') ? 0 : 60);
     // Can be 0 while the canvas has no size yet (hidden pane, mid-resize); draw() skips then.
-    view.cell = Math.max(0, Math.floor(Math.min(110, (r.width - margin * 2) / game.w, (r.height - margin * 2) / game.h)));
+    view.cell = Math.max(0, Math.floor(Math.min(110, (r.width - margin * 2) / game.w, (height - margin * 2) / game.h)));
     view.ox = Math.round((r.width - view.cell * game.w) / 2);
-    view.oy = Math.round((r.height - view.cell * game.h) / 2);
+    view.oy = Math.round((height - view.cell * game.h) / 2);
   }
   dirty = true;
 }
@@ -1057,6 +1126,23 @@ function draw() {
     ctx.arc(tileX(r.i), tileY(r.i), c * r.size * (0.35 + 0.65 * easeOut(k)), 0, Math.PI * 2);
     ctx.stroke();
   }
+  // Tutorial hand: a pulsing ring on the pipe to turn, and a finger tapping it.
+  if (game.coach >= 0 && !game.solved) {
+    const x = tileX(game.coach), y = tileY(game.coach);
+    const beat = REDUCED ? 0.5 : (now * 1.1) % 1;
+    ctx.globalAlpha = 1 - beat;
+    ctx.strokeStyle = COLORS.gold;
+    ctx.lineWidth = Math.max(2, c * 0.05);
+    ctx.beginPath();
+    ctx.arc(x, y, c * (0.3 + 0.3 * beat), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    const tap = REDUCED ? 0 : Math.max(0, Math.sin(now * 1.1 * Math.PI * 2)) * c * 0.1;
+    ctx.font = `${Math.round(c * 0.5)}px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('👆', x + c * 0.05, y + c * 0.12 + tap);
+  }
   for (const p of game.fx) {
     ctx.globalAlpha = 1 - (p.age / p.life) ** 2;
     ctx.fillStyle = p.color;
@@ -1110,10 +1196,18 @@ if ('ResizeObserver' in window) new ResizeObserver(() => layout()).observe(canva
 
 $('btn-menu').onclick = openMenu;
 $('btn-restart').onclick = () => {
-  if (!game || game.solved) return;
+  if (!game || game.solved || inBreak) return;
   if (!REDUCED) $('btn-restart').animate([{ transform: 'rotate(0)' }, { transform: 'rotate(360deg)' }], { duration: 450, easing: 'cubic-bezier(0.22,1,0.36,1)' });
-  startLevel();
+  resumeWith(startLevel);
 };
+// Inside a portal iframe, neither the wheel nor keys may scroll the page around the game.
+window.addEventListener('wheel', (e) => {
+  if (!(e.target instanceof Element && e.target.closest('.overlay'))) e.preventDefault();
+}, { passive: false });
+window.addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLInputElement) return;
+  if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'].includes(e.key)) e.preventDefault();
+});
 $('btn-hint').onclick = hint;
 $('btn-continue').onclick = continueRun;
 $('btn-new').onclick = askNewGame;
@@ -1132,59 +1226,19 @@ $('btn-win-menu').onclick = openMenu;
 $('btn-sound').onclick = () => {
   save.muted = !save.muted;
   persist();
-  $('btn-sound').textContent = `Sound: ${progressSound()}`;
+  $('btn-sound').textContent = soundLabel();
+};
+// The language button steps through the list; the choice is remembered and beats the default.
+$('btn-lang').onclick = () => {
+  const codes = Object.keys(LANGS);
+  save.lang = setLang(codes[(codes.indexOf(getLang()) + 1) % codes.length]);
+  persist();
+  applyDom();
+  updateHud();
+  updateCoach();
+  openMenu();
 };
 
-// Debug helpers for testing: open with ?debug
-if (new URLSearchParams(location.search).has('debug')) {
-  window.__drip = {
-    get game() { return game; },
-    get save() { return save; },
-    /** Put every tile right except one, which needs a single clockwise tap. Returns its index. */
-    almostSolve() {
-      game.tiles.forEach((_, i) => { game.tiles[i] = game.sol[i]; });
-      const i = game.tiles.findIndex((m, idx) => idx !== game.src && rotCW(m) !== m);
-      game.tiles[i] = rotCCW(game.tiles[i]);
-      afterChange();
-      return i;
-    },
-    tapsTo(i) { rotate(i, 1); },
-    checkHousesDone,
-    jumpTo(level) { save.run.level = level; save.run.seed = newSeed(); persist(); startLevel(); },
-    boardSize,
-    generate,
-    flood,
-    isSolved,
-    /** Scripted state for screenshots: ?debug&demo=<level>,<score>,<wrong tiles | win> */
-    demo(level, score, mode) {
-      save.tutorialSeen = true;
-      newRun({ anonymous: true });
-      save.run.score = score;
-      this.jumpTo(level);
-      const last = this.almostSolve();
-      if (mode === 'win') {
-        rotate(last, 1);
-        return this.settle();
-      }
-      const n = game.w * game.h;
-      for (let k = 1, done = 0; done < mode && k < n; k++) {
-        const i = (k * 7) % n;
-        if (i === game.src || i === last || rotCW(game.tiles[i]) === game.tiles[i]) continue;
-        rotate(i, 1);
-        done++;
-      }
-      this.settle();
-    },
-    /** Jump every animation to its end, so a screenshot shows a finished frame. */
-    settle() {
-      still = true;
-      document.documentElement.classList.add('still');
-      game.t0 -= 10;
-      if (game.winAt !== null) game.winAt -= 10;
-      for (let k = 0; k < 240; k++) step(0.05);
-    },
-  };
-}
 
 // ---------- boot ----------
 
@@ -1193,12 +1247,11 @@ if (new URLSearchParams(location.search).has('debug')) {
     mute: () => { adPlaying = true; },
     unmute: () => { adPlaying = false; },
   });
+  setLang(save.lang || new URLSearchParams(location.search).get('lang') || Platform.language);
+  applyDom();
+  // A hint costs an ad view only where ads exist; the button shows the film icon then.
+  document.documentElement.classList.toggle('has-ads', Platform.hasAds);
   layout();
-  openMenu();
+  bootRun();
   requestAnimationFrame(frame);
-  const demo = new URLSearchParams(location.search).get('demo');
-  if (demo && window.__drip) {
-    const [level, score, mode] = demo.split(',');
-    window.__drip.demo(Number(level), Number(score), mode === 'win' ? 'win' : Number(mode));
-  }
 })();

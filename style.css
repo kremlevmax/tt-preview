@@ -225,3 +225,29 @@ button { transition: transform 0.12s ease-out, filter 0.12s ease-out; }
 
 /* Debug screenshots: no entrance animations. */
 .still *, .still *::before { animation: none !important; }
+
+/* Portal rules: a button that plays an ad must show the film icon. */
+.ad-badge { display: none; margin-right: 4px; }
+.has-ads .ad-badge { display: inline; }
+.has-ads #btn-hint { width: auto; padding: 0 10px; white-space: nowrap; }
+/* Portal builds carry no studio branding inside the game. */
+.portal .studio { display: none; }
+.overlay { overscroll-behavior: contain; }
+
+/* First-level tutorial caption, under the board. */
+.coach {
+  position: absolute;
+  left: 50%;
+  bottom: calc(22px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 5;
+  max-width: calc(100% - 32px);
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 2px solid var(--gold);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
