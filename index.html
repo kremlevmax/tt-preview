@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="author" content="Left Sock Games">
+  <meta name="theme-color" content="#0f1b2d">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Thirsty Town</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f1b2d'/%3E%3Cpath d='M32 10C32 10 16 30 16 40a16 16 0 0 0 32 0C48 30 32 10 32 10Z' fill='%233ec5ff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="hud">
+      <button id="btn-menu" class="icon" aria-label="Menu">☰</button>
+      <div class="hud-mid">
+        <div class="hud-top"><span id="lvl">Level 1</span><span id="score" class="pts">0 pts</span></div>
+        <div id="meter" class="meter"></div>
+      </div>
+      <button id="btn-restart" class="icon" aria-label="Restart this board">↻</button>
+      <button id="btn-hint" class="icon" aria-label="Hint: watch an ad, costs 25% of this level's points">💡</button>
+    </header>
+
+    <canvas id="board"></canvas>
+
+    <!-- main menu -->
+    <div id="menu" class="overlay">
+      <svg class="logo" viewBox="0 0 96 100" aria-hidden="true">
+        <rect x="8" y="30" width="10" height="28" rx="3" fill="#8ea3c0"/>
+        <path d="M18 36H56a18 18 0 0 1 18 18V62H58V56a4 4 0 0 0-4-4H18Z" fill="#dbe8f8"/>
+        <rect x="55" y="62" width="22" height="6" rx="2" fill="#8ea3c0"/>
+        <rect x="36" y="24" width="8" height="12" fill="#8ea3c0"/>
+        <rect x="24" y="15" width="32" height="10" rx="5" fill="#ff9f43"/>
+        <path class="logo-drop" d="M66 73C66 73 58 83 58 88a8 8 0 0 0 16 0C74 83 66 73 66 73Z" fill="#3ec5ff"/>
+      </svg>
+      <h1>Thirsty<span>Town</span></h1>
+      <p class="sub">Rotate the pipes. Get water to every house.<br>Every win makes the next board bigger.</p>
+      <button id="btn-continue" class="primary wide"></button>
+      <button id="btn-new" class="secondary wide">New game</button>
+      <button id="btn-leaders" class="secondary wide">🏆 Leaderboard</button>
+      <button id="btn-name" class="link"></button>
+      <button id="btn-howto" class="link">How to play</button>
+      <p id="best" class="sub small"></p>
+      <details class="rules">
+        <summary>How scoring works</summary>
+        <ul>
+          <li>A board counts as solved when <b>every pipe carries water</b>, not just the houses.</li>
+          <li>Each board is worth <b>its size × 10</b> points: 5×5 = 250.</li>
+          <li>Stars multiply that: <b class="gold">★★★ ×3</b>, <b class="gold">★★ ×2</b>, <b class="gold">★ ×1</b>.</li>
+          <li><b class="gold">★★★</b> means solved in the fewest possible taps. <b class="gold">★★</b> allows 50% more.</li>
+          <li>The bar at the top shows your stars live and how many taps you have left to keep them.</li>
+          <li>Each hint costs 25% of that board's points.</li>
+          <li>Boards grow as you win, and the run never ends.</li>
+        </ul>
+      </details>
+      <button id="btn-sound" class="secondary small-btn">Sound: on</button>
+      <p class="studio">
+        <svg viewBox="0 0 40 50" aria-hidden="true">
+          <path d="M18 4H34V34a12 12 0 0 1-12 12H12a8 8 0 0 1 0-16h2q4 0 4-4Z" fill="#e8f1ff"/>
+          <path d="M18 4H34V12H18Z" fill="#ff9f43"/>
+          <path d="M18 15H34V18H18Z" fill="#ff9f43"/>
+          <path d="M12 30a8 8 0 0 0 0 16h1a9 9 0 0 1 0-16Z" fill="#ff9f43"/>
+        </svg>
+        <span>a <b>Left Sock Games</b> game</span>
+      </p>
+      <div class="bubbles" aria-hidden="true"><i style="--x:6%;--s:18px;--d:11s;--w:-2s;--sway:20px"></i><i style="--x:17%;--s:34px;--d:15s;--w:-9s;--sway:-26px"></i><i style="--x:29%;--s:12px;--d:9s;--w:-5s;--sway:14px"></i><i style="--x:41%;--s:26px;--d:13s;--w:-1s;--sway:-18px"></i><i style="--x:55%;--s:16px;--d:10s;--w:-7s;--sway:22px"></i><i style="--x:66%;--s:40px;--d:17s;--w:-12s;--sway:-30px"></i><i style="--x:78%;--s:14px;--d:9s;--w:-3s;--sway:16px"></i><i style="--x:90%;--s:24px;--d:12s;--w:-8s;--sway:-20px"></i></div>
+    </div>
+
+    <!-- level complete -->
+    <div id="win" class="overlay hidden">
+      <h2 id="win-title">Level complete</h2>
+      <div id="win-stars" class="stars"></div>
+      <div id="win-breakdown" class="breakdown"></div>
+      <div id="win-points" class="big-pts"></div>
+      <p id="win-total" class="sub"></p>
+      <p id="win-tip" class="sub small"></p>
+      <p id="win-rank" class="sub small"></p>
+      <ol id="win-leaders" class="leaders compact"></ol>
+      <button id="btn-next" class="primary wide">Next level</button>
+      <button id="btn-win-menu" class="secondary">Menu</button>
+    </div>
+
+    <!-- how to play (shown before the first ever run, and from the menu) -->
+    <div id="howto" class="overlay hidden">
+      <h2>How to play</h2>
+      <ol class="howto">
+        <li><span class="ico">👆</span><div><b>Tap a tile to rotate it.</b><br>Right-click turns it the other way.</div></li>
+        <li><span class="ico">🏠</span><div><b>Get water to every house.</b><br>Water flows from the tap: the round tile with the blue drop 💧.</div></li>
+        <li><span class="ico">💧</span><div><b>Use every pipe.</b><br>The level is solved only when <b>every pipe is full of water</b> and no pipe end is left open. Watering the houses alone is not enough.</div></li>
+      </ol>
+      <button id="btn-howto-ok" class="primary wide">Got it</button>
+    </div>
+
+    <!-- start-over confirmation -->
+    <div id="confirm" class="overlay hidden">
+      <h2>Start over?</h2>
+      <p id="confirm-text" class="sub"></p>
+      <button id="btn-confirm-yes" class="primary wide">Start over</button>
+      <button id="btn-confirm-no" class="secondary">Cancel</button>
+    </div>
+
+    <!-- name entry -->
+    <div id="name-dlg" class="overlay hidden">
+      <h2>Your name</h2>
+      <p class="sub">Shown on the global leaderboard. Please don't use your real full name.</p>
+      <input id="name-input" class="field" maxlength="16" autocomplete="off" spellcheck="false" placeholder="e.g. PipeMaster">
+      <p id="name-err" class="err"></p>
+      <button id="btn-name-save" class="primary wide">Save</button>
+      <button id="btn-name-skip" class="secondary">Not now</button>
+    </div>
+
+    <!-- leaderboard -->
+    <div id="leaders" class="overlay hidden">
+      <h2>🏆 Leaderboard</h2>
+      <p id="leaders-status" class="sub"></p>
+      <ol id="leaders-list" class="leaders"></ol>
+      <p id="leaders-me" class="sub small"></p>
+      <button id="btn-leaders-close" class="secondary">Close</button>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script>window.PLATFORM="off";window.LEADERBOARD_URL="off";</script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
