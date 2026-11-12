@@ -379,6 +379,7 @@ function startLevel() {
   if (measuredSeed !== run.seed) {
     measuredSeed = run.seed;
     Platform.measure('level', run.level, 'start');
+    Platform.offerShown('hint');
   }
   layout();
 }
@@ -615,7 +616,7 @@ async function hint() {
   if (!wrong.length) return toast(t('toastAllSet'));
   inBreak = true;
   Platform.gameplayStop();
-  const granted = await Platform.rewarded();
+  const granted = await Platform.rewarded('hint');
   inBreak = false;
   Platform.gameplayStart();
   // On portals a refused ad stays silent: the portal explains ad blockers itself.

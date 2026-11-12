@@ -200,8 +200,24 @@ export const Platform = {
   /** Ad opportunity before the player returns to the game. Always resolves. */
   interstitial() { return ad(() => impl.interstitial()); },
 
-  /** Ad for a reward. Resolves true when the reward should be granted. */
-  rewarded() { return ad(() => impl.rewarded(), false); },
+  /**
+   * Tell the portal a rewarded-ad button is on screen, e.g. offerShown('hint').
+   * Call it once each time the offer appears. Silent where there are no ads.
+   */
+  offerShown(placement) {
+    if (this.hasAds) this.measure('rewarded', placement, 'visible');
+  },
+
+  /**
+   * Ad for a reward. Resolves true when the reward should be granted.
+   * Pass the same placement name as in offerShown() so the portal can compare
+   * how many players saw the button with how many used it.
+   */
+  rewarded(placement) {
+    if (inAd) return Promise.resolve(false);
+    if (placement && this.hasAds) this.measure('rewarded', placement, 'interact');
+    return ad(() => impl.rewarded(), false);
+  },
 };
 
 /** localStorage that never throws (private mode, blocked storage, sandboxed iframes). */
